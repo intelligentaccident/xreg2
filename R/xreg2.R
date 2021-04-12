@@ -21,15 +21,12 @@ xregControl2 <- function (formulas,
 {
   if (class(formulas)[1] %in% c("xregControl", "xregControlList")) 
     return(c(formulas))
+  
   if (class(formulas)[1] == "formula") 
     formulas <- list(formulas)
   required <- attr(x = p_fun,which = "required")
   
-  defined_vars <- character()
-  for (formula in formulas) {
-    targetName <- as.character(formula[[2]])
-    defined_vars <- c(defined_vars, targetName)
-  }
+  defined_vars <- sapply(formulas, function(x){as.character(x[[2]])})
   if (length(required)) {
     
     req <- as.list(rep(0, length(required)))
@@ -169,8 +166,7 @@ xreg2 <- function (controlList,
                                                     formulas = controlList))
   if ("xreg" %in% class(start_values)) 
     startValues <- start_values$coef
-  if ("numeric" %in% class(start_values) & length(start_values) > 
-      0) 
+  if ("numeric" %in% class(start_values) & length(start_values) > 0) 
     startValues <- start_values
   if ("data.frame" %in% class(dataList)) {
     dataList <- list(dataList)
