@@ -121,62 +121,99 @@ c.xregControlList <- function(...) {  #return(do.call(c.xregControl, do.call(c.l
 
 
 xreg2 <- function (controlList, 
-                   dataList = NULL, 
-                   start_values = numeric(), 
-                   fixed_values = numeric(), 
-                   latent_classes = 0, 
-                   latent_class_parameters = character(), 
-                   latent_id_colname = character(), 
-                   return_type = "fit", 
-                   print_sum = F,
-                   method = "ucminf",
-                   hessian = T,
-                   ...) {
+                     dataList = NULL, 
+                     start_values = numeric(), 
+                     fixed_values = numeric(), 
+                     return_type = "fit", 
+                     print_sum = F,
+                     method = "ucminf",
+                     hessian = T,
+                     bounds = F,
+                     ...) {
+  
   xreg2_time <- Sys.time()
   if("xreg2_obj" %in% class(controlList)) return(xreg2Optim(xreg2obj = controlList, method = method, hessian = hessian, ...))
   if(is.null(dataList)) stop('Argument "dataList" is missing, with no default.')
   
+  
   dot_args <- list(...)
   dot_args[c("p_fun", "p_aggrgation_fun")] <- NULL
-  if (latent_classes < 2) 
-    latent_class_parameters <- character()
-  if (!is.character(latent_class_parameters)) {
-    warning("Latent_class_parameters not character. Latent classes will be disregarded.")
-    latent_class_parameters <- character()
-    latent_classes <- 0
-    latent_id_colname <- character()
-  }
-  if (!is.character(latent_id_colname)) {
-    warning("latent_id_colname not character. Latent classes will be disregarded.")
-    latent_class_parameters <- character()
-    latent_classes <- 0
-    latent_id_colname <- character()
-  }
-  if (length(latent_id_colname)) 
-    latent_id_colname <- latent_id_colname[1]
-  lik_fun = xlik
-  startValues <- attr(controlList, "startValues")
+  this_call <- match.call()
+
+  
+  #####################
+  #### PREPARATION ####
+  #####################
+  
+  startValues <- attr(controlList, "startValues") # if controlList is an xregControl Object it will find start values
+  fixedValues <- numeric()
+  
+  
+  # find start values and formula in xreg object entered as controlList(formula)
   if ("xreg" %in% class(controlList)) {
     if (is.na(start_values[1])) 
       start_values <- controlList$coef
-    controlList <- controlList$controlList
+    controlList <- controlList$controlList 
+    # is the formula always saved as controlList in an xreg object?
+    # we need the formula here saved as controlList because next lines work with controlList as a formula
   }
+  
+
   formulas <- controlList
-  controlList <- do.call(xregControl, match_formals(fun = xregControl, 
-                                                    formulas = controlList))
+  controlList <- do.call(xregControl2, match_formals(fun = xregControl2, 
+                                                     formulas = controlList)) # ll functions need to be loaded
+  
+  
+  ### START VALUES ####
+  
   if ("xreg" %in% class(start_values)) 
     startValues <- start_values$coef
   if ("numeric" %in% class(start_values) & length(start_values) > 0) 
     startValues <- start_values
+  # use only first given value for each parameter
+  if(length(unique(names(startValues))) < length(startValues)) {
+    warning(paste0("More than one start value assigned for parameters (", 
+                   paste(names(startValues)[-match(unique(names(startValues)), 
+                                                   names(startValues))], collapse = ", "), "). First value used."))
+    startValues <- startValues[unique(names(startValues))]
+  }
+  
+  
+  #### FIXED VALUES ####
+  
+  if (length(fixed_values)) {
+    if ("xreg" %in% class(fixed_values)) {
+      fixed_values <- fixed_values$pars
+    }
+    if ("data.frame" %in% class(fixed_values)) {
+      fixed_df <- fixed_values[, 1:2] # this is not dynamically
+      fixed_values <- fixed_values[, 1] # # this is not dynamically
+      names(fixed_values) <- rownames(fixed_df)
+    }else {
+      fixed_df <- data.frame(Estimate = fixed_values, 
+                             `Std. Error` = rep(NA, NROW(fixed_values)))
+    }
+  }else {
+    fixed_df <- data.frame(Estimate = numeric(), `Std. Error` = numeric())
+  }
+  
+  
+  colnames(fixed_df) <- c("Estimate", "Std. Error")  # can be left out, if `Std Error` works above
+  rownames(fixed_df) <- names(fixed_values)
+  
+  
+  
+  #### TRANSFORM DATALIST TO A LIST ####
+  
   if ("data.frame" %in% class(dataList)) {
     dataList <- list(dataList)
     names(dataList)[1] <- names(controlList)[1]
     warning(paste0("Dataframe provided where list expected in dataList argument. The dataframe has been enclosed in a list, and named \"", 
                    names(controlList)[1], "\" to match the first xregControl-object."))
   }
+  
   if (!all(names(dataList) %in% names(controlList))) 
-    stop(paste("No control list provided for ", paste(names(dataList)[!names(dataList) %in% 
-                                                                        names(controlList)], collapse = ", ")))
+    stop(paste("No control list provided for ", paste(names(dataList)[!names(dataList) %in% names(controlList)], collapse = ", ")))
   if (is.null(names(dataList))) {
     if (length(dataList) <= length(controlList)) {
       warning("Provided datalist was unnamed. Names coerced from controlList")
@@ -186,48 +223,22 @@ xreg2 <- function (controlList,
       stop("Provided datalist was unnamed, and longer than provided controllist. Exiting.")
     }
   }
-  if (length(unique(names(startValues))) < length(startValues)) {
-    warning(paste0("More than one start value assigned for parameters (", 
-                   paste(names(startValues)[-match(unique(names(startValues)), 
-                                                   names(startValues))], collapse = ", "), "). First value used."))
-    startValues <- startValues[unique(names(startValues))]
-  }
-  if (length(fixed_values)) {
-    if ("xreg" %in% class(fixed_values)) {
-      fixed_values <- fixed_values$pars
-    }
-    if ("data.frame" %in% class(fixed_values)) {
-      fixed_df <- fixed_values[, 1:2]
-      fixed_values <- fixed_values[, 1]
-      names(fixed_values) <- rownames(fixed_df)
-    }
-    else {
-      fixed_df <- data.frame(Estimate = fixed_values, 
-                             `Std. Error` = rep(NA, NROW(fixed_values)))
-      colnames(fixed_df) <- c("Estimate", "Std. Error")
-      rownames(fixed_df) <- names(fixed_values)
-    }
-  }
-  else {
-    fixed_df <- data.frame(a = numeric(), b = numeric())
-  }
-  colnames(fixed_df) <- c("Estimate", "Std. Error")
-  fixedValues <- numeric()
-  this_call <- match.call()
-  initControlList <- controlList
-  aggr <- TRUE
+  
+  
+  
+  ### WHAT DOES THIS DO ?? ####
+  #  aggr <- TRUE
   return_lik_df <- (return_type == "df")
   return_first <- (return_type == "first")
   if (return_type == "predict") {
-    aggr <- FALSE
+    #    aggr <- FALSE
     return_lik_df = TRUE
     return_type = "first_df"
   }
   if (return_type == "first_df") {
     return_first <- TRUE
     return_first_df <- TRUE
-  }
-  else {
+  }else {
     return_first_df <- FALSE
   }
   if (return_type == "precalc_df") {
@@ -235,20 +246,32 @@ xreg2 <- function (controlList,
     return_lik_df <- FALSE
     return_first_df <- TRUE
   }
-  start_vals = vector()
-  prep_out <- list()
+  
+  
+  
+  # Preparing Loop of dataList elements to find relevant columns
+  # and start values
   newDataList <- list()
   all_defined_vars <- character()
   undefined_vars <- character()
   valuevars <- list()
+  
+  
+  ### LOOP OVER DATA LIST ###
+  
   for (dataName in names(dataList)) {
     rel_col <- vector()
     thisControl <- controlList[[dataName]]
     data_df <- dataList[[dataName]]
-    orig_cols <- colnames(data_df)
+    # orig_cols <- colnames(data_df)
     valueVar <- NA
     defined_vars <- colnames(data_df)
     local_vars <- character()
+    
+    
+    # loop over different formulas to select target variable
+    # and relevant and local variables: not everything calculated here is really needed later
+    # maybe do this with lapply??
     for (fnum in 1:length(thisControl$formulas)) {
       formula <- thisControl$formulas[[fnum]]
       targetName <- as.character(formula[[2]])
@@ -270,98 +293,125 @@ xreg2 <- function (controlList,
         defined_vars <- c(defined_vars, targetName)
       local_vars <- c(local_vars, all.vars(formula), targetName)
     }
+    
     local_vars <- local_vars[!local_vars %in% colnames(data_df)]
     controlList[[dataName]][["defined_vars"]] <- local_vars
-    censor_bounds <- thisControl$censor_bounds
-    grep_vals <- grep(paste0(valueVar, "\\."), colnames(data_df), value = TRUE)
-    if (length(grep_vals) > 2) 
-      stop("More than two columns matching target variable.")
-    if (length(grep_vals) == 2) {
-      if (all((data_df[, grep_vals[1]] - data_df[, grep_vals[2]]) >= 0)) {
-        upper_bound_var <- grep_vals[1]
-        lower_bound_var <- grep_vals[2]
-      }
-      else if (all((data_df[, grep_vals[1]] - data_df[, grep_vals[2]]) <= 0)) {
-        upper_bound_var <- grep_vals[2]
-        lower_bound_var <- grep_vals[1]
-      }
-      else stop(paste0("Two columns matched the left-hand side: ", 
-                       grep_vals[1], " and ", grep_vals[2], ". However, neither was allways >= the other, so they cannot be used as upper/lower bounds. Quitting."))
-    }
-    else {
-      if (!valueVar %in% colnames(data_df)) {
-        stop("No value columns specified. ")
+    
+    
+    ### BOUNDS FOR CENSORING ####
+    
+    if(any(thisControl$censor_bounds != c(-Inf,Inf))){
+      censor_bounds <- thisControl$censor_bounds
+      grep_vals <- grep(paste0(valueVar, "\\."), colnames(data_df), value = TRUE)
+      if (length(grep_vals) > 2) 
+        stop("More than two columns matching target variable.")
+      if (length(grep_vals) == 2) {
+        if (all((data_df[, grep_vals[1]] - data_df[, grep_vals[2]]) >= 0)) {
+          upper_bound_var <- grep_vals[1]
+          lower_bound_var <- grep_vals[2]
+        }
+        else if (all((data_df[, grep_vals[1]] - data_df[, grep_vals[2]]) <= 0)) {
+          upper_bound_var <- grep_vals[2]
+          lower_bound_var <- grep_vals[1]
+        }
+        else stop(paste0("Two columns matched the left-hand side: ", 
+                         grep_vals[1], " and ", grep_vals[2], ". However, neither was allways >= the other, so they cannot be used as upper/lower bounds. Quitting."))
       }
       else {
-        upper_bound_var <- lower_bound_var <- valueVar
+        if (!valueVar %in% colnames(data_df)) {
+          stop("No value columns specified. ")
+        }
+        else {
+          upper_bound_var <- lower_bound_var <- valueVar
+        }
+      }
+      
+      controlList[[dataName]]$upper_bound_var <- upper_bound_var
+      controlList[[dataName]]$lower_bound_var <- lower_bound_var
+      controlList[[dataName]]$valueVar <- valueVar
+      data_df[, c("internal_ub", "internal_lb")] <- data_df[, c(upper_bound_var, lower_bound_var)]
+      
+      formula[[2]] <- substitute(Xb) # WHY???
+      e_params <- list(...)
+      data_df$internal_classgroup <- paste0(dataName, ".", 1:NROW(data_df))
+      
+      if("id" %in% colnames(data_df)) data_df$internal_id <- as.integer(data_df$id)
+      data_df <- within(data_df, {
+        both_na <- is.na(internal_ub) * is.na(internal_lb)
+        internal_ub[internal_ub >= max(thisControl$censor_bounds)] <- Inf
+        internal_lb[internal_lb <= min(thisControl$censor_bounds)] <- -Inf
+        internal_lb[internal_lb >= max(thisControl$censor_bounds)] <- max(thisControl$censor_bounds)
+        internal_ub[internal_ub <= min(thisControl$censor_bounds)] <- min(thisControl$censor_bounds)
+        internal_ub[is.na(internal_ub)] <- Inf
+        internal_lb[is.na(internal_lb)] <- -Inf
+        internal_type <- rep(3, NROW(internal_ub))
+        internal_type[internal_ub == internal_lb] <- 1
+        internal_type[internal_ub == Inf] <- 0 # should this be more dynamically?
+        internal_type[internal_lb == -Inf] <- 2 # should this be more dynamically?
+        internal_count <- 1
+      })
+      if (sum(data_df$both_na)) {
+        warning(paste0(sum(data_df$both_na), " rows in which ", valueVar, " was NA were removed."))
+        data_df <- data_df[!data_df$both_na, -(NCOL(data_df))]
+      }
+      
+    }else{ # if we don?t have bounds, we don´t need to calcute everything above
+      formula[[2]] <- substitute(Xb) # WHY???
+      e_params <- list(...)
+      
+      controlList[[dataName]]$upper_bound_var <- valueVar
+      controlList[[dataName]]$lower_bound_var <- valueVar
+      controlList[[dataName]]$valueVar <- valueVar
+      data_df[, c("internal_ub", "internal_lb")] <- data_df[, c(valueVar, valueVar)]
+      data_df[,"internal_type"] <- 1
+      data_df[,"internal_count"] <- 1
+      data_df$both_na <- is.na(data_df$internal_ub) * is.na(data_df$internal_lb)
+      if(sum(data_df$both_na)){
+        warning(paste0(sum(data_df$both_na), " rows in which ", valueVar, " was NA were removed."))
+        data_df <- data_df[!data_df$both_na, -(NCOL(data_df))]
       }
     }
-    # message(paste(colnames(data_df), collapse = ", "))
-    controlList[[dataName]]$upper_bound_var <- upper_bound_var
-    controlList[[dataName]]$lower_bound_var <- lower_bound_var
-    controlList[[dataName]]$valueVar <- valueVar
-    data_df[, c("internal_ub", "internal_lb")] <- data_df[, c(upper_bound_var, lower_bound_var)]
-    formula[[2]] <- substitute(Xb)
-    e_params <- list(...)
-    if (length(latent_id_colname)) {
-      if (latent_id_colname %in% colnames(data_df)) 
-        data_df$internal_classgroup <- data_df[, latent_id_colname]
-    }
-    else data_df$internal_classgroup <- paste0(dataName, ".", 1:NROW(data_df))
-    if("id" %in% colnames(data_df)) data_df$internal_id <- as.integer(data_df$id)
-    data_df <- within(data_df, {
-      both_na <- is.na(internal_ub) * is.na(internal_lb)
-      internal_ub[internal_ub >= max(thisControl$censor_bounds)] <- Inf
-      internal_lb[internal_lb <= min(thisControl$censor_bounds)] <- -Inf
-      internal_lb[internal_lb >= max(thisControl$censor_bounds)] <- max(thisControl$censor_bounds)
-      internal_ub[internal_ub <= min(thisControl$censor_bounds)] <- min(thisControl$censor_bounds)
-      internal_ub[is.na(internal_ub)] <- Inf
-      internal_lb[is.na(internal_lb)] <- -Inf
-      internal_type <- rep(3, NROW(internal_ub))
-      internal_type[internal_ub == internal_lb] <- 1
-      internal_type[internal_ub == Inf] <- 0
-      internal_type[internal_lb == -Inf] <- 2
-      internal_count <- 1
-    })
-    if (sum(data_df$both_na)) {
-      warning(paste0(sum(data_df$both_na), " rows in which ", 
-                     valueVar, " was NA were removed."))
-      data_df <- data_df[!data_df$both_na, -(NCOL(data_df))]
-    }
-    if (!is.na((weights_var <- thisControl$weights_var)) & 
-        weights_var %in% colnames(data_df)) 
+    
+    #### WEIGHTS ####
+    if (!is.na((weights_var <- thisControl$weights_var)) & weights_var %in% colnames(data_df)) 
       data_df$internal_count <- data_df[, weights_var]
-    relevant_columns <- c(rel_col, colnames(data_df)[grep("internal_", 
-                                                          colnames(data_df))])
-    if (aggr) {
-      new_df <- data_df[, colnames(data_df) %in% relevant_columns]
-      new_df$internal_unique <- as.numeric(as.factor(apply(new_df, 
-                                                           MARGIN = 1, FUN = "paste", collapse = "")))
-      unique_df <- unique(new_df)
-      unique_df$internal_count <- aggregate(new_df$internal_count, 
-                                            by = list(new_df$internal_unique), FUN = "sum")[unique_df$internal_unique, 
-                                                                                            2]
-      newDataList[[dataName]] <- unique_df
-    }
-    else {
-      newDataList[[dataName]] <- data_df
-    }
-    controlList[[dataName]]$orig_cols <- orig_cols
-    startValues <- c(startValues, thisControl$start_values[!names(thisControl$start_values) %in% 
-                                                             names(startValues)])
-    fixedValues <- c(fixedValues, thisControl$fixed_values[!names(thisControl$fixed_values) %in% 
-                                                             names(fixedValues)])
-    all_defined_vars <- c(all_defined_vars, defined_vars[!defined_vars %in% 
-                                                           all_defined_vars])
-    controlList[[dataName]]$obs_types <- c(Uncensored = sum(data_df$internal_count * 
-                                                              (data_df$internal_ub == data_df$internal_lb)), `Left censored` = sum(data_df$internal_count * 
-                                                                                                                                     (data_df$internal_ub > data_df$internal_lb) * (data_df$internal_ub < 
-                                                                                                                                                                                      Inf) * (data_df$internal_lb == -Inf)), `Right censored` = sum(data_df$internal_count * 
-                                                                                                                                                                                                                                                      (data_df$internal_ub > data_df$internal_lb) * (data_df$internal_lb > 
-                                                                                                                                                                                                                                                                                                       -Inf) * (data_df$internal_ub == Inf)), Intervals = sum(data_df$internal_count * 
-                                                                                                                                                                                                                                                                                                                                                                (data_df$internal_ub > data_df$internal_lb) * (data_df$internal_lb > 
-                                                                                                                                                                                                                                                                                                                                                                                                                 -Inf) * (data_df$internal_ub < Inf)))
-  }
+    
+    relevant_columns <- c(rel_col, colnames(data_df)[grep("internal_",colnames(data_df))])
+    
+    # I Think we don?t need this part any longer
+    # while creating xreg2lobject we save the unique dataset
+    
+    #   if (aggr) {
+    #      new_df <- data_df[, is.element(colnames(data_df),relevant_columns)]
+    #      new_df$internal_unique <- as.numeric(as.factor(apply(new_df,MARGIN = 1, FUN = "paste", collapse = "")))
+    #      unique_df <- unique(new_df)
+    #      unique_df$internal_count  <- new_df %>% group_by(internal_unique) %>% summarise(n = n()) %>% .$`n`
+    #      newDataList[[dataName]] <- unique_df
+    #    }
+    #    else {
+    newDataList[[dataName]] <- data_df[, is.element(colnames(data_df),relevant_columns)]
+    #    }
+  
+    
+    
+    # Maybe this can be changed? 
+    # does it rellay have to be in the loop or can this be found in the xregControl Object directly?
+    startValues <- c(startValues, thisControl$start_values[!is.element(names(thisControl$start_values), names(startValues))])
+    
+    fixedValues <- c(fixedValues, thisControl$fixed_values[!is.element(names(thisControl$fixed_values),names(fixedValues))])
+    
+    all_defined_vars <- c(all_defined_vars, defined_vars[!is.element(defined_vars,all_defined_vars)])
+    
+    controlList[[dataName]]$obs_types <- c(Uncensored = sum(data_df$internal_count *(data_df$internal_ub == data_df$internal_lb)), 
+                                           `Left censored` = sum(data_df$internal_count * (data_df$internal_ub > data_df$internal_lb) * (data_df$internal_ub < Inf) * (data_df$internal_lb == -Inf)), 
+                                           `Right censored` = sum(data_df$internal_count * (data_df$internal_ub > data_df$internal_lb) * (data_df$internal_lb > -Inf) * (data_df$internal_ub == Inf)),
+                                           Intervals = sum(data_df$internal_count * (data_df$internal_ub > data_df$internal_lb) * (data_df$internal_lb >-Inf) * (data_df$internal_ub < Inf)))
+  } # end of loop over dataList
+  ### END LOOP DATA LIST ###
+  
+  
+  ### PREPARE START AND FIXED VALUES ###
+  
   if (length(fixedValues)) {
     fixed_values[names(fixedValues)] <- fixedValues
     tmp <- rep(NA, NROW(fixed_values))
@@ -370,13 +420,19 @@ xreg2 <- function (controlList,
     fixed_df <- data.frame(Estimate = fixed_values, `Std. Error` = tmp)
     colnames(fixed_df) <- c("Estimate", "Std. Error")
   }
+  
+  
   startValues[names(fixed_values)[names(fixed_values) %in% 
                                     names(startValues)]] <- fixed_values[names(fixed_values) %in% 
                                                                            names(startValues)]
   undefined_vars <- unique(undefined_vars[!undefined_vars %in% 
-                                            c(names(startValues), latent_class_parameters)])
-  undefined_vars <- undefined_vars[!undefined_vars %in% c("Xb", 
-                                                          names(fixedValues))]
+                                            names(startValues)])
+  undefined_vars <- undefined_vars[!undefined_vars %in% c("Xb",names(fixedValues))]
+  
+  
+  
+  ### SETTING START VALUES WHICH ARE NOT GIVEN ####
+  
   if (length(undefined_vars)) {
     tmp <- paste(undefined_vars, collapse = ", ")
     used_from <- "xreg"
@@ -389,35 +445,20 @@ xreg2 <- function (controlList,
     names(tmp) <- undefined_vars
     startValues <- c(startValues, tmp)
   }
-  if (latent_classes > 1) {
-    for (lc in latent_class_parameters) {
-      tmp <- 0.1
-      names(tmp) <- lc
-      if (lc %in% names(startValues)) {
-        tmp <- startValues[lc]
-        startValues <- startValues[-which(names(startValues) == 
-                                            lc)]
-        all_defined_vars <- all_defined_vars[-which(all_defined_vars == 
-                                                      lc)]
-      }
-      for (i in 1:latent_classes) {
-        lci <- paste(lc, i, sep = ".")
-        if (!lci %in% names(startValues)) {
-          startValues <- c(startValues, tmp)
-          names(startValues)[length(startValues)] <- lci
-        }
-        if (!lci %in% all_defined_vars) {
-          all_defined_vars <- c(all_defined_vars, lci)
-        }
-      }
-    }
-  }
+  
   if (length((tmp <- names(startValues[!names(startValues) %in% all_defined_vars])))) {
     startValues <- startValues[!names(startValues) %in% tmp]
     tmp <- paste(tmp, collapse = ", ")
     warning(paste0("Start values defined for variables (", 
                    tmp, ") not found in column names or formulas. These have been removed."))
   }
+  
+  startValues[names(fixed_values)] <- fixed_values
+  relcols <- relevant_columns[!is.element(relevant_columns, names(startValues))]
+  
+  
+  ### E_PARAMS ###
+  # What is this for?
   if ("optim_control" %in% names(e_params)) {
     ctrl <- e_params[["optim_control"]]
     dot_args["optim_control"] <- NULL
@@ -432,13 +473,16 @@ xreg2 <- function (controlList,
                                    lmm = 10))
   
   
-  
-  startValues[names(fixed_values)] <- fixed_values
-  
-  relcols <- relevant_columns[!relevant_columns %in% names(startValues)]
+  ###########################################
+  ### CREATE XREG2LOBJ AND ESTIMATE MODEL ###
+  ###########################################
   
   dtns <- names(newDataList)
   names(dtns) <- dtns
+  
+  greek <- c("ALPHA", "BETA", "GAMMA", "DELTA", "EPSILON", "ZETA", "ETA", "THETA", "IOTA", "KAPPA", "LAMBDA", "MU", "NU", "XI", "OMIKRON", "PI", "RHO", "SIGMA", "TAU", "UPSILON", "PHI", "CHI", "PSI", "OMEGA")
+  
+  # change it to lapply over the list itself?
   xreg2lobj <- lapply(X = dtns, FUN = function(dtn) {
     thisfull <- newDataList[[dtn]]
     thisfull <- thisfull[, colnames(thisfull)[!colnames(thisfull) %in% c("internal_classgroup")]]
@@ -448,7 +492,7 @@ xreg2 <- function (controlList,
     thisfull$umatch <- multimatch(tmpfull, thisunique)
     startValues <- startValues[!names(startValues) %in% names(fixed_values)]
     
-    greek <- c("ALPHA", "BETA", "GAMMA", "DELTA", "EPSILON", "ZETA", "ETA", "THETA", "IOTA", "KAPPA", "LAMBDA", "MU", "NU", "XI", "OMIKRON", "PI", "RHO", "SIGMA", "TAU", "UPSILON", "PHI", "CHI", "PSI", "OMEGA")
+    
     
     # Special value names
     spvns <- unique(unlist(lapply(c(greek, "INTERCEPT", "SLOPE"), function(x) grep(pattern = x, x = names(startValues), value = T))))
@@ -481,6 +525,9 @@ xreg2 <- function (controlList,
   })
   class(xreg2lobj) <- c("xreg2_obj", "list")
   # message(xreg2lobj[[1]]$ctrl)
+  
+  ### ESTIMATE MODEL ###
+  
   if(return_type == "control") {
     return(xreg2lobj)
   } else {
@@ -491,84 +538,8 @@ xreg2 <- function (controlList,
   oout$xreg2_time <- Sys.time()-xreg2_time
   
   return(oout)
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  if (return_first) {
-    ret <- do.call(lik_fun, c(startValues, list(controlList = controlList, 
-                                                dataList = newDataList, print_sum = F, return_lik_df = return_lik_df, 
-                                                return_first_df = return_first_df, latent_classes = latent_classes, 
-                                                latent_class_parameters = latent_class_parameters, 
-                                                dot_args)))
-    for (nm in names(ret)) {
-    }
-    return(ret)
-  }
-  testmle <- do.call(x_mle, c(list(minuslogl = lik_fun, start = as.list(startValues), 
-                                   controlList = controlList, dataList = newDataList, control = control, 
-                                   print_sum = print_sum, fixed = as.list(fixed_values), 
-                                   latent_classes = latent_classes, latent_class_parameters = latent_class_parameters), 
-                              dot_args))
-  dfs <- do.call(lik_fun, c(c(testmle$coef, fixed_values), 
-                            list(controlList = controlList, dataList = newDataList, 
-                                 print_sum = F, return_lik_df = T, return_first_df = T, 
-                                 latent_classes = latent_classes, latent_class_parameters = latent_class_parameters, 
-                                 dot_args)))
-  pars <- cbind(testmle$fullcoef, type = rep("Fitted", NROW(testmle$fullcoef)))
-  testmle$fixed_values <- fixed_df
-  testmle$fixed_values <- fixed_df
-  pars <- rbind(pars, cbind(fixed_df, type = rep("Fixed", 
-                                                 NROW(fixed_df))))
-  res_types <- list()
-  pars[, paste0("n_", names(dfs))] <- 0
-  obs_types <- as.data.frame(matrix(rep(0, length(names(dfs)) * 
-                                          4), nrow = 4))
-  colnames(obs_types) <- names(dfs)
-  rownames(obs_types) <- c("Uncensored", "Left-censored", 
-                           "Right-censored", "Intervals")
-  for (nm in names(dfs)) {
-    res_types[["p_sum"]][nm] <- sum(controlList[[dataName]]$p_aggregation_fun(dfs[[nm]]))
-    pars[rownames(pars) %in% controlList[[nm]]$defined_vars, 
-         paste0("n_", nm)] <- res_types[["counts"]][nm] <- sum(dfs[[nm]]$internal_count)
-    obs_types[, nm] <- controlList[[nm]]$obs_types
-  }
-  obs_types$total <- rowSums(obs_types)
-  pars[, "n_sum"] <- rowSums(pars[, paste0("n_", names(dfs)), 
-                                  F])
-  pars[, "t value"] <- abs(pars$Estimate)/pars$"Std. Error"
-  pars[, "Pr(>|t|)"] <- 2 * pt(pars$"t value", df = pars$n_sum - 
-                                 1, lower.tail = F)
-  testmle$pars <- pars
-  testmle$pars_v <- pars[, 1]
-  testmle$coef <- testmle$pars[, 1]
-  names(testmle$coef) <- rownames(testmle$pars)
-  res_types[["counts"]][["total_count"]] <- sum(res_types[["counts"]])
-  res_types[["p_sum"]]["total"] <- sum(res_types[["p_sum"]])
-  testmle$minima <- res_types$p_sum
-  testmle$obs_types <- obs_types
-  testmle$info <- rbind(obs_types, total_obs = res_types$counts, 
-                        minima = res_types$p_sum, logLik = -res_types$p_sum)
-  names(testmle$pars_v) <- rownames(pars)
-  res <- list(controlList = controlList, start_values = start_values, 
-              mle_obj = testmle, coef = testmle$coef, coefficients = testmle$coef, 
-              full_coef = testmle$pars, valueVar = valueVar, fixed_values = fixed_df, 
-              minima = res_types[["p_sum"]], counts = res_types[["counts"]], 
-              obs_types = obs_types, pars = pars, pars_v = testmle$pars_v)
-  class(res) <- c("xreg", "list")
-  return(res)
 }
+
 
 
 
